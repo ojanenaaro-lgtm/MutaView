@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     `https://rest.uniprot.org/uniprotkb/search?` +
     `query=(gene:${encodeURIComponent(gene)})+AND+(organism_id:9606)+AND+(reviewed:true)` +
     `&format=json` +
-    `&fields=accession,gene_names,protein_name,ft_domain,cc_function`;
+    `&fields=accession,gene_names,protein_name,ft_domain,cc_function,sequence`;
 
   try {
     const response = await fetch(uniprotUrl, {
@@ -68,12 +68,15 @@ export async function GET(request: Request) {
         end: f.location?.end?.value ?? 0,
       }));
 
+    const sequence: string = entry.sequence?.value ?? "";
+
     return NextResponse.json({
       uniprotId,
       proteinName,
       geneName,
       function: functionText,
       domains,
+      sequence,
     });
   } catch (error) {
     const message =

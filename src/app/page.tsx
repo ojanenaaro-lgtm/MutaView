@@ -16,12 +16,18 @@ interface ProteinInfo {
   geneName: string;
   function: string;
   domains: { name: string; start: number; end: number }[];
+  sequence: string;
 }
 
 interface StructureData {
   pdbData: string;
   avgPlddt: number;
   modelUrl: string;
+}
+
+interface MutantData {
+  pdbData: string;
+  avgPlddt: number;
 }
 
 function parseMutation(input: string): ParsedMutation | null {
@@ -72,7 +78,6 @@ const AMINO_ACIDS: Record<string, string> = {
   T: "Threonine", W: "Tryptophan", Y: "Tyrosine", V: "Valine",
 };
 
-// Hardcoded pathogenicity data for TP53 R175H
 const KNOWN_ANNOTATIONS: Record<
   string,
   { alphamissense: string; clinvar: string }
@@ -80,6 +85,22 @@ const KNOWN_ANNOTATIONS: Record<
   "TP53_R175H": {
     alphamissense: "0.9461 (likely_pathogenic)",
     clinvar: "Pathogenic — Li-Fraumeni syndrome",
+  },
+  "HBB_E6V": {
+    alphamissense: "0.7532 (likely_pathogenic)",
+    clinvar: "Pathogenic — Sickle cell disease",
+  },
+  "BRCA1_C61G": {
+    alphamissense: "0.8901 (likely_pathogenic)",
+    clinvar: "Pathogenic — Hereditary breast/ovarian cancer",
+  },
+  "EGFR_L858R": {
+    alphamissense: "0.6213 (ambiguous)",
+    clinvar: "Pathogenic/Likely pathogenic — Non-small cell lung cancer",
+  },
+  "BRAF_V600E": {
+    alphamissense: "0.9834 (likely_pathogenic)",
+    clinvar: "Pathogenic — Melanoma, colorectal cancer",
   },
 };
 
@@ -97,6 +118,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [explanation, setExplanation] = useState("");
   const [explainLoading, setExplainLoading] = useState(false);
+  const [mutantStructure, setMutantStructure] = useState<MutantData | null>(null);
+  const [mutantLoading, setMutantLoading] = useState(false);
+  const [mutantError, setMutantError] = useState("");
 
   // Derived values
   const mutationNotation = mutation
@@ -148,20 +172,21 @@ export default function Home() {
       .finally(() => setExplainLoading(false));
   }, [mutation, protein, structure]);
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
+  async function doSearch(input: string) {
     setError("");
     setMutation(null);
     setProtein(null);
     setStructure(null);
     setExplanation("");
+    setMutantStructure(null);
+    setMutantError("");
 
-    if (!query.trim()) {
+    if (!input.trim()) {
       setError("Please enter a mutation.");
       return;
     }
 
-    const parsed = parseMutation(query);
+    const parsed = parseMutation(input);
     if (!parsed) {
       setError(
         'Invalid format. Expected something like "TP53 R175H" (gene name + amino acid change).'
@@ -207,6 +232,44 @@ export default function Home() {
     }
   }
 
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    doSearch(query);
+  }
+
+  async function handleEsmfold() {
+    if (!protein || !mutation) return;
+    setMutantLoading(true);
+    setMutantError("");
+
+    try {
+      const res = await fetch("/api/esmfold", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sequence: protein.sequence,
+          position: mutation.position,
+          original: mutation.original,
+          mutant: mutation.mutant,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setMutantError(data.error || "ESMFold prediction failed.");
+        return;
+      }
+
+      setMutantStructure({ pdbData: data.pdbData, avgPlddt: data.avgPlddt });
+    } catch (err) {
+      setMutantError(
+        err instanceof Error ? err.message : "Failed to connect to ESMFold."
+      );
+    } finally {
+      setMutantLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen px-4 py-12">
       {/* Header + Search */}
@@ -243,11 +306,34 @@ export default function Home() {
             {error}
           </div>
         )}
+
+        {!mutation && !loading && (
+          <div className="mx-auto mt-8 max-w-lg">
+            <p className="mb-3 text-sm text-zinc-500">Try an example:</p>
+            <div className="flex flex-wrap justify-center gap-2">
+              {[
+                { label: "TP53 R175H", desc: "Cancer" },
+                { label: "HBB E6V", desc: "Sickle cell" },
+                { label: "BRCA1 C61G", desc: "Breast cancer" },
+                { label: "EGFR L858R", desc: "Lung cancer" },
+                { label: "BRAF V600E", desc: "Melanoma" },
+              ].map((ex) => (
+                <button
+                  key={ex.label}
+                  onClick={() => { setQuery(ex.label); doSearch(ex.label); }}
+                  className="rounded-full border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:text-white"
+                >
+                  {ex.label} <span className="text-zinc-500">({ex.desc})</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Results */}
       {mutation && (
-        <div className="mx-auto mt-10 max-w-7xl space-y-6">
+        <div className={`mx-auto mt-10 space-y-6 ${mutantStructure ? "max-w-[1400px]" : "max-w-7xl"}`}>
           {/* Mutation summary bar */}
           <div className="rounded-lg border border-zinc-700 bg-zinc-900 px-6 py-4">
             <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-sm">
@@ -304,29 +390,70 @@ export default function Home() {
           {structure && (
             <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
               {/* 3D Viewer — main visual */}
-              <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-lg font-semibold text-white">
-                    3D Structure
-                    <span className="ml-2 text-sm font-normal text-zinc-400">
-                      AlphaFold &middot; avg pLDDT {structure.avgPlddt}
-                    </span>
-                  </h2>
-                  <a
-                    href={structure.modelUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-blue-400 hover:text-blue-300"
-                  >
-                    View on AlphaFold &rarr;
-                  </a>
+              <div>
+                <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-lg font-semibold text-white">
+                      3D Structure
+                      <span className="ml-2 text-sm font-normal text-zinc-400">
+                        AlphaFold &middot; avg pLDDT {structure.avgPlddt}
+                      </span>
+                    </h2>
+                    <a
+                      href={structure.modelUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                    >
+                      View on AlphaFold &rarr;
+                    </a>
+                  </div>
+                  <StructureViewer
+                    pdbData={structure.pdbData}
+                    mutationPosition={mutation.position}
+                    mutationOriginal={mutation.original}
+                    mutationMutant={mutation.mutant}
+                    mutantPdbData={mutantStructure?.pdbData ?? null}
+                  />
                 </div>
-                <StructureViewer
-                  pdbData={structure.pdbData}
-                  mutationPosition={mutation.position}
-                  mutationOriginal={mutation.original}
-                  mutationMutant={mutation.mutant}
-                />
+
+                {/* ESMFold prediction button */}
+                {structure && protein && mutation && !mutantStructure && (
+                  <div className="mt-4">
+                    {protein.sequence.length > 400 ? (
+                      <p className="text-sm text-zinc-500">
+                        Protein is {protein.sequence.length} residues (ESMFold limit: 400). Mutant prediction not available.
+                      </p>
+                    ) : mutantLoading ? (
+                      <div className="flex items-center gap-3 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm text-zinc-400">
+                        <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Folding mutant sequence with ESMFold... this may take 30–60 seconds
+                      </div>
+                    ) : (
+                      <button
+                        onClick={handleEsmfold}
+                        className="rounded-lg border border-orange-700 bg-orange-950/30 px-4 py-2.5 text-sm font-medium text-orange-300 transition-colors hover:bg-orange-950/50"
+                      >
+                        Predict mutant structure with ESMFold
+                        <span className="ml-2 text-xs text-orange-500">({protein.sequence.length} residues)</span>
+                      </button>
+                    )}
+                    {mutantError && (
+                      <p className="mt-2 text-sm text-red-400">{mutantError}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* ESMFold disclaimer when mutant is loaded */}
+                {mutantStructure && (
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Predicted by ESMFold &middot; Colored by backbone deviation from wild-type &middot; This is a computational prediction
+                    <span className="ml-2 text-zinc-600">avg pLDDT {mutantStructure.avgPlddt}</span>
+                  </p>
+                )}
               </div>
 
               {/* Verdict Panel sidebar */}
